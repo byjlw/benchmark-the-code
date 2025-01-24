@@ -54,6 +54,14 @@ def setup_logging(output_dir: Path):
         ]
     )
 
+def format_completion(task_id: str, completion: str) -> Dict:
+    """Format a completion in the way expected by human-eval."""
+    return {
+        "task_id": task_id,
+        "completion": completion,
+        "prompt": None  # Not needed for evaluation
+    }
+
 def benchmark_model(model: str, problems: Dict, num_samples: int = None) -> List[Dict]:
     results = []
     successful = 0
@@ -67,10 +75,7 @@ def benchmark_model(model: str, problems: Dict, num_samples: int = None) -> List
         for task_id, problem in pbar:
             completion = benchmark.generate_solution(problem["prompt"])
             if completion is not None:
-                results.append({
-                    "task_id": task_id,
-                    "completion": completion
-                })
+                results.append(format_completion(task_id, completion))
                 successful += 1
                 pbar.set_postfix({"success": f"{successful}/{total}"})
             else:
@@ -145,28 +150,29 @@ def main():
             continue
             
         try:
-            # Create a mapping of task_id to completion for attempted problems
-            attempted_problems = {c["task_id"]: c for c in completions}
-            
-            # Create a filtered problems set containing only attempted problems
-            filtered_problems = {
-                task_id: problems[task_id]
-                for task_id in attempted_problems.keys()
-            }
-            
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.jsonl') as temp:
-                write_jsonl(temp.name, completions)
-                metrics = evaluate_functional_correctness(
-                    temp.name,
-                    problems=filtered_problems
-                )
+            try:
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.jsonl') as temp:
+                    write_jsonl(temp.name, completions)
+                    metrics = evaluate_functional_correctness(temp.name)
+                    
+                results = {
+                    "completions": completions,
+                    "metrics": metrics,
+                    "attempted": len(completions),
+                    "total_requested": args.samples if args.samples else len(problems),
+                    "pass_rate": metrics["pass@1"]
+                }
                 
-            results = {
-                "completions": completions,
-                "metrics": metrics,
-                "attempted": len(completions),
-                "total_requested": args.samples if args.samples else len(problems)
-            }
+                logging.info(f"Evaluation results for {model}:")
+                logging.info(f"Attempted: {results['attempted']}/{results['total_requested']} problems")
+                logging.info(f"Pass rate: {results['pass_rate']*100:.1f}%")
+                
+            except Exception as e:
+                logging.error(f"Evaluation failed for {model}: {str(e)}")
+                logging.error(f"Exception type: {type(e).__name__}")
+                import traceback
+                logging.error(f"Traceback:\n{traceback.format_exc()}")
+                raise
             
             if save_results(results, output_dir, model):
                 logging.info(f"Results saved for {model}")
