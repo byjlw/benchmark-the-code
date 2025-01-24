@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
 
 class ModelBenchmark:
-    def __init__(self, model: str, base_url: str = "http://localhost:11434/api/generate", timeout: int = 120):
+    def __init__(self, model: str, base_url: str = "http://localhost:11434/api/generate", timeout: int = 300):
         self.model = model
         self.base_url = base_url
         self.timeout = timeout
@@ -56,20 +56,30 @@ def setup_logging(output_dir: Path):
 
 def benchmark_model(model: str, problems: Dict, num_samples: int = None) -> List[Dict]:
     results = []
+    successful = 0
+    total = num_samples if num_samples else len(problems)
     
     if num_samples:
         problems = dict(list(problems.items())[:num_samples])
     
     with ModelBenchmark(model) as benchmark:
-        for task_id, problem in tqdm(problems.items(), desc=f"Testing {model}"):
+        pbar = tqdm(problems.items(), desc=f"Testing {model}", total=total)
+        for task_id, problem in pbar:
             completion = benchmark.generate_solution(problem["prompt"])
             if completion is not None:
                 results.append({
                     "task_id": task_id,
                     "completion": completion
                 })
+                successful += 1
+                pbar.set_postfix({"success": f"{successful}/{total}"})
             else:
                 logging.warning(f"Skipping task {task_id} for {model} due to generation failure")
+    
+    if successful < total:
+        logging.warning(f"Completed {successful}/{total} tasks successfully for {model}")
+    else:
+        logging.info(f"Successfully completed all {total} tasks for {model}")
     
     return results
 
@@ -101,8 +111,8 @@ def main():
                       help="Directory to save results (default: ./results)")
     parser.add_argument("--parallel", action="store_true",
                       help="Run models in parallel")
-    parser.add_argument("--timeout", type=int, default=120,
-                      help="Timeout for each API call in seconds (default: 120)")
+    parser.add_argument("--timeout", type=int, default=300,
+                      help="Timeout for each API call in seconds (default: 300)")
     
     args = parser.parse_args()
     output_dir = Path(args.output_dir)
