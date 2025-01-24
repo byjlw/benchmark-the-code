@@ -2,55 +2,94 @@ import argparse
 import json
 import requests
 import time
+from datetime import datetime
+import tempfile
+import logging
+import os
 from human_eval.data import write_jsonl, read_problems
 from human_eval.evaluation import evaluate_functional_correctness
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Optional
 from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
 
 class ModelBenchmark:
-    def __init__(self, model: str, base_url: str = "http://localhost:11434/api/generate"):
+    def __init__(self, model: str, base_url: str = "http://localhost:11434/api/generate", timeout: int = 30):
         self.model = model
         self.base_url = base_url
+        self.timeout = timeout
+        self.session = requests.Session()
+    
+    def __enter__(self):
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.session.close()
 
-    def generate_solution(self, prompt: str) -> str:
-        try:
-            response = requests.post(
-                self.base_url,
-                json={"model": self.model, "prompt": prompt, "stream": False}
-            )
-            return response.json()["response"]
-        except Exception as e:
-            print(f"Error generating solution for {self.model}: {e}")
-            return ""
+    def generate_solution(self, prompt: str, retries: int = 3) -> Optional[str]:
+        for attempt in range(retries):
+            try:
+                response = self.session.post(
+                    self.base_url,
+                    json={"model": self.model, "prompt": prompt, "stream": False},
+                    timeout=self.timeout
+                )
+                response.raise_for_status()
+                return response.json()["response"]
+            except requests.exceptions.RequestException as e:
+                if attempt == retries - 1:
+                    logging.error(f"Failed to generate solution for {self.model} after {retries} attempts: {e}")
+                    return None
+                time.sleep(2 ** attempt)  # Exponential backoff
+
+def setup_logging(output_dir: Path):
+    output_dir.mkdir(parents=True, exist_ok=True)
+    log_file = output_dir / f"benchmark_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(str(log_file)),
+            logging.StreamHandler()
+        ]
+    )
 
 def benchmark_model(model: str, problems: Dict, num_samples: int = None) -> List[Dict]:
-    benchmark = ModelBenchmark(model)
     results = []
     
     if num_samples:
         problems = dict(list(problems.items())[:num_samples])
     
-    for task_id, problem in tqdm(problems.items(), desc=f"Testing {model}"):
-        completion = benchmark.generate_solution(problem["prompt"])
-        results.append({
-            "task_id": task_id,
-            "completion": completion
-        })
+    with ModelBenchmark(model) as benchmark:
+        for task_id, problem in tqdm(problems.items(), desc=f"Testing {model}"):
+            completion = benchmark.generate_solution(problem["prompt"])
+            if completion is not None:
+                results.append({
+                    "task_id": task_id,
+                    "completion": completion
+                })
+            else:
+                logging.warning(f"Skipping task {task_id} for {model} due to generation failure")
     
     return results
 
-def save_results(results: Dict, output_dir: Path):
-    output_dir.mkdir(exist_ok=True)
-    timestamp = time.strftime("%Y%m%d-%H%M%S")
-    
-    completions_path = output_dir / f"completions_{timestamp}.jsonl"
-    write_jsonl(str(completions_path), results["completions"])
-    
-    metrics_path = output_dir / f"metrics_{timestamp}.json"
-    with open(metrics_path, "w") as f:
-        json.dump(results["metrics"], f, indent=2)
+def save_results(results: Dict, output_dir: Path, model: str) -> bool:
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base_filename = f"{model}_{timestamp}"
+        
+        completions_path = output_dir / f"{base_filename}_completions.jsonl"
+        write_jsonl(str(completions_path), results["completions"])
+        
+        metrics_path = output_dir / f"{base_filename}_metrics.json"
+        with open(metrics_path, "w") as f:
+            json.dump(results["metrics"], f, indent=2)
+        
+        return True
+    except Exception as e:
+        logging.error(f"Failed to save results for {model}: {e}")
+        return False
 
 def main():
     parser = argparse.ArgumentParser(description="Benchmark LLMs using Human-Eval")
@@ -62,10 +101,20 @@ def main():
                       help="Directory to save results (default: ./results)")
     parser.add_argument("--parallel", action="store_true",
                       help="Run models in parallel")
+    parser.add_argument("--timeout", type=int, default=30,
+                      help="Timeout for each API call in seconds (default: 30)")
     
     args = parser.parse_args()
     output_dir = Path(args.output_dir)
-    problems = read_problems()
+    setup_logging(output_dir)
+    
+    try:
+        problems = read_problems()
+    except Exception as e:
+        logging.error(f"Failed to read problems: {e}")
+        return
+    
+    logging.info(f"Starting benchmark with models: {args.models}")
     
     if args.parallel:
         with ThreadPoolExecutor() as executor:
@@ -80,17 +129,28 @@ def main():
             for model in args.models
         ]
     
-    results = {}
     for model, completions in zip(args.models, model_completions):
-        metrics = evaluate_functional_correctness(completions)
-        results[model] = {
-            "completions": completions,
-            "metrics": metrics
-        }
-        save_results(results[model], output_dir / model)
-        
-        print(f"\nResults for {model}:")
-        print(json.dumps(metrics, indent=2))
+        if not completions:
+            logging.error(f"No completions generated for {model}")
+            continue
+            
+        try:
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.jsonl') as temp:
+                write_jsonl(temp.name, completions)
+                metrics = evaluate_functional_correctness(temp.name)
+                
+            results = {
+                "completions": completions,
+                "metrics": metrics
+            }
+            
+            if save_results(results, output_dir, model):
+                logging.info(f"Results saved for {model}")
+                print(f"\nResults for {model}:")
+                print(json.dumps(metrics, indent=2))
+            
+        except Exception as e:
+            logging.error(f"Failed to process results for {model}: {e}")
 
 if __name__ == "__main__":
     main()
