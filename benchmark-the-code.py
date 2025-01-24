@@ -35,7 +35,17 @@ class ModelBenchmark:
                     timeout=self.timeout
                 )
                 response.raise_for_status()
-                return response.json()["response"]
+                completion = response.json()["response"]
+                
+                # Extract just the function implementation
+                if "def" in completion:
+                    # Keep only the content after the function definition
+                    completion = completion[completion.find("def"):]
+                    logging.debug(f"Generated completion:\n{completion}")
+                    return completion
+                else:
+                    logging.warning(f"No function definition found in completion:\n{completion}")
+                    return None
             except requests.exceptions.RequestException as e:
                 if attempt == retries - 1:
                     logging.error(f"Failed to generate solution for {self.model} after {retries} attempts: {e}")
@@ -56,6 +66,11 @@ def setup_logging(output_dir: Path):
 
 def format_completion(task_id: str, completion: str) -> Dict:
     """Format a completion in the way expected by human-eval."""
+    # Ensure the completion starts with the function definition
+    if not completion.strip().startswith("def"):
+        logging.warning(f"Completion for {task_id} doesn't start with 'def'")
+        return None
+        
     return {
         "task_id": task_id,
         "completion": completion,
@@ -75,7 +90,13 @@ def benchmark_model(model: str, problems: Dict, num_samples: int = None) -> List
         for task_id, problem in pbar:
             completion = benchmark.generate_solution(problem["prompt"])
             if completion is not None:
-                results.append(format_completion(task_id, completion))
+                formatted = format_completion(task_id, completion)
+                if formatted:
+                    results.append(formatted)
+                    successful += 1
+                    pbar.set_postfix({"success": f"{successful}/{total}"})
+                else:
+                    logging.warning(f"Skipping malformed completion for task {task_id}")
                 successful += 1
                 pbar.set_postfix({"success": f"{successful}/{total}"})
             else:
