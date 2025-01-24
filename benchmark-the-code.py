@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
 
 class ModelBenchmark:
-    def __init__(self, model: str, base_url: str = "http://localhost:11434/api/generate", timeout: int = 30):
+    def __init__(self, model: str, base_url: str = "http://localhost:11434/api/generate", timeout: int = 120):
         self.model = model
         self.base_url = base_url
         self.timeout = timeout
@@ -101,8 +101,8 @@ def main():
                       help="Directory to save results (default: ./results)")
     parser.add_argument("--parallel", action="store_true",
                       help="Run models in parallel")
-    parser.add_argument("--timeout", type=int, default=30,
-                      help="Timeout for each API call in seconds (default: 30)")
+    parser.add_argument("--timeout", type=int, default=120,
+                      help="Timeout for each API call in seconds (default: 120)")
     
     args = parser.parse_args()
     output_dir = Path(args.output_dir)
