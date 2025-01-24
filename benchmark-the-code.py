@@ -151,21 +151,47 @@ def main():
             
         try:
             try:
+                # Create a temporary file with all problems, using empty completions for skipped ones
+                all_completions = []
+                completion_map = {c["task_id"]: c["completion"] for c in completions}
+                
+                for task_id in problems.keys():
+                    if task_id in completion_map:
+                        all_completions.append({
+                            "task_id": task_id,
+                            "completion": completion_map[task_id],
+                            "prompt": None
+                        })
+                    else:
+                        # Add empty completion for skipped problems
+                        all_completions.append({
+                            "task_id": task_id,
+                            "completion": "",
+                            "prompt": None
+                        })
+                
                 with tempfile.NamedTemporaryFile(mode='w', suffix='.jsonl') as temp:
-                    write_jsonl(temp.name, completions)
+                    write_jsonl(temp.name, all_completions)
                     metrics = evaluate_functional_correctness(temp.name)
-                    
+                
+                # Calculate actual pass rate based on attempted problems only
+                attempted_pass_rate = (
+                    metrics["pass@1"] * len(problems) / len(completions)
+                    if completions else 0.0
+                )
+                
                 results = {
-                    "completions": completions,
+                    "completions": completions,  # Only store actual completions
                     "metrics": metrics,
                     "attempted": len(completions),
                     "total_requested": args.samples if args.samples else len(problems),
-                    "pass_rate": metrics["pass@1"]
+                    "pass_rate": attempted_pass_rate
                 }
                 
                 logging.info(f"Evaluation results for {model}:")
                 logging.info(f"Attempted: {results['attempted']}/{results['total_requested']} problems")
-                logging.info(f"Pass rate: {results['pass_rate']*100:.1f}%")
+                logging.info(f"Pass rate (of attempted): {results['pass_rate']*100:.1f}%")
+                logging.info(f"Raw pass rate (including empty): {metrics['pass@1']*100:.1f}%")
                 
             except Exception as e:
                 logging.error(f"Evaluation failed for {model}: {str(e)}")
