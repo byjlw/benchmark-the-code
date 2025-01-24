@@ -145,13 +145,27 @@ def main():
             continue
             
         try:
+            # Create a mapping of task_id to completion for attempted problems
+            attempted_problems = {c["task_id"]: c for c in completions}
+            
+            # Create a filtered problems set containing only attempted problems
+            filtered_problems = {
+                task_id: problems[task_id]
+                for task_id in attempted_problems.keys()
+            }
+            
             with tempfile.NamedTemporaryFile(mode='w', suffix='.jsonl') as temp:
                 write_jsonl(temp.name, completions)
-                metrics = evaluate_functional_correctness(temp.name)
+                metrics = evaluate_functional_correctness(
+                    temp.name,
+                    problems=filtered_problems
+                )
                 
             results = {
                 "completions": completions,
-                "metrics": metrics
+                "metrics": metrics,
+                "attempted": len(completions),
+                "total_requested": args.samples if args.samples else len(problems)
             }
             
             if save_results(results, output_dir, model):
