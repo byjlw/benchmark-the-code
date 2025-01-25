@@ -20,22 +20,24 @@ Requires Ollama if using Ollama models.
 
 ```bash
 # Basic usage
-python benchmark-the-code.py --models codellama:7b codellama:13b
+python cli.py --models codellama:7b codellama:13b
 
 # With options
-python benchmark-the-code.py \
+python cli.py \
     --models codellama:7b codellama:13b \
     --samples 10 \
     --parallel \
-    --output-dir results
+    --output-dir results \
+    --timeout 300
 ```
 
 ## Options
 
-- `--models\`: List of model names to benchmark
-- `--samples\`: Number of problems to test (default: all)
-- `--output-dir\`: Directory to save results (default: ./results)
-- `--parallel\`: Run models in parallel
+- `--models`: List of model names to benchmark
+- `--samples`: Number of problems to test (default: all)
+- `--output-dir`: Directory to save results (default: ./results)
+- `--parallel`: Run models in parallel
+- `--timeout`: Timeout for each API call in seconds (default: 300)
 
 ## Output Structure
 
